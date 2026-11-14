@@ -107,16 +107,41 @@ async function getTranscript(id) {
   }
 
   const track = tracks.find((t) => t.languageCode?.startsWith("en")) || tracks[0];
-  const capRes = await fetch(track.baseUrl + "&fmt=json3");
+  const capRes = await fetch(track.baseUrl);
   if (!capRes.ok) throw new HttpError("Could not download the captions. Paste the transcript instead.", 422);
 
-  const caps = await capRes.json();
-  const text = (caps.events || [])
-    .filter((e) => e.segs)
-    .map((e) => e.segs.map((s) => s.utf8).join(""))
-    .join(" ");
+  const text = parseCaptions(await capRes.text());
+  if (!text) throw new HttpError("The captions came back empty. Paste the transcript instead.", 422);
 
   return { text, title: data?.videoDetails?.title || "" };
+}
+
+function decodeEntities(s) {
+  return s
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+// YouTube returns captions as XML (<text> or <p> tags) or, for some formats, JSON. Handle both.
+function parseCaptions(raw) {
+  raw = raw.trim();
+  if (raw.startsWith("{")) {
+    const caps = JSON.parse(raw);
+    return (caps.events || [])
+      .filter((e) => e.segs)
+      .map((e) => e.segs.map((seg) => seg.utf8).join(""))
+      .join(" ");
+  }
+  const parts = [];
+  for (const m of raw.matchAll(/<(?:text|p)\b[^>]*>([\s\S]*?)<\/(?:text|p)>/g)) {
+    parts.push(decodeEntities(decodeEntities(m[1].replace(/<[^>]+>/g, ""))));
+  }
+  return parts.join(" ");
 }
 
 async function ask(env, system, user, maxTokens) {
